@@ -1,0 +1,714 @@
+const CONFIG = {
+  siteName: "Multi-Cloud S3 Index",
+  siteIcon: "🌤️",
+  theme: "dark",
+  defaultPath: "",
+  passwordProtected: false,
+  password: "",
+  experimentalMkvSupport: true,
+  routingStrategy: "path-based",
+  pathRouting: {
+    "impossible/": "impossiblecloud",
+    "wasabi/": "wasabi",
+    default: "impossiblecloud"
+  },
+  providerPriority: ["impossiblecloud", "wasabi"]
+};
+
+const PROVIDERS = {
+  impossiblecloud: {
+    name: "ImpossibleCloud",
+    icon: "☁️",
+    description: "🇪🇺 European • Zero Egress Fees",
+    endpoints: {
+      "eu-central-2": "eu-central-2.storage.impossibleapi.net",
+      "eu-west-1": "eu-west-1.storage.impossibleapi.net",
+      "eu-west-2": "eu-west-2.storage.impossibleapi.net",
+      "eu-east-1": "eu-east-1.storage.impossibleapi.net",
+      "eu-north-1": "eu-north-1.storage.impossibleapi.net"
+    },
+    defaultRegion: "eu-central-2"
+  },
+  wasabi: {
+    name: "Wasabi",
+    icon: "🪣",
+    description: "🌍 Global • Hot Cloud Storage",
+    endpoints: {
+      "us-east-1": "s3.wasabisys.com",
+      "us-east-2": "s3.us-east-2.wasabisys.com",
+      "us-west-1": "s3.us-west-1.wasabisys.com",
+      "eu-central-1": "s3.eu-central-1.wasabisys.com",
+      "eu-central-2": "s3.eu-central-2.wasabisys.com",
+      "eu-west-1": "s3.eu-west-1.wasabisys.com",
+      "eu-west-2": "s3.eu-west-2.wasabisys.com",
+      "ap-northeast-1": "s3.ap-northeast-1.wasabisys.com",
+      "ap-northeast-2": "s3.ap-northeast-2.wasabisys.com",
+      "ap-southeast-1": "s3.ap-southeast-1.wasabisys.com",
+      "ap-southeast-2": "s3.ap-southeast-2.wasabisys.com"
+    },
+    defaultRegion: "us-east-1"
+  }
+};
+
+export default {
+  async fetch(request, env) {
+    if (request.method === "OPTIONS") {
+      return handleOptions(request);
+    }
+
+    try {
+      const url = new URL(request.url);
+      const rawPath = decodeURIComponent(url.pathname).replace(/^\//, "");
+
+      if (url.pathname === "/favicon.ico") {
+        return serveFavicon();
+      }
+
+      if (CONFIG.passwordProtected && !await checkAuth(request, CONFIG.password)) {
+        return new Response(getPasswordPage(), {
+          status: 401,
+          headers: {
+            "Content-Type": "text/html",
+            "WWW-Authenticate": 'Basic realm="Multi-Cloud S3 Index"'
+          }
+        });
+      }
+
+      const { provider, cleanPath } = determineProviderAndCleanPath(rawPath);
+      const providerConfig = getProviderConfig(env, provider);
+
+      // --- NEW ROUTE for ?share=true ---
+      if (url.searchParams.has("share")) {
+        return await handleShareLink(providerConfig, cleanPath, request);
+      } else if (url.searchParams.has("download")) {
+        return await handleDownload(providerConfig, cleanPath, request);
+      } else if (url.searchParams.has("preview")) {
+        return await handlePreview(providerConfig, cleanPath, rawPath, request);
+      } else if (url.searchParams.has("stream")) {
+        return await handleStream(providerConfig, cleanPath, request);
+      } else {
+        return await handleBrowse(providerConfig, cleanPath, rawPath, request);
+      }
+    } catch (error) {
+      console.error("Multi-Cloud Error:", error.message);
+      const errorResponse = new Response(getErrorPage(error.message || "Multi-Cloud Error"), {
+        status: error.status || 500,
+        headers: { "Content-Type": "text/html" }
+      });
+      addCorsHeaders(errorResponse.headers);
+      return errorResponse;
+    }
+  }
+};
+
+// --- CORS & CORE HELPER FUNCTIONS ---
+
+function handleOptions(request) {
+  const headers = new Headers();
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  headers.set("Access-Control-Max-Age", "86400");
+  const reqHeaders = request.headers.get("Access-Control-Request-Headers");
+  if (reqHeaders) {
+    headers.set("Access-Control-Allow-Headers", reqHeaders);
+  } else {
+    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-amz-date, x-amz-content-sha256, range");
+  }
+  return new Response(null, { status: 204, headers });
+}
+
+function addCorsHeaders(headers) {
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Expose-Headers", "Content-Disposition, Content-Type, Content-Length, ETag, X-Provider, Content-Range");
+  return headers;
+}
+
+function determineProviderAndCleanPath(path) {
+  for (const [prefix, provider] of Object.entries(CONFIG.pathRouting)) {
+    if (prefix !== "default" && path.startsWith(prefix)) {
+      return { provider, cleanPath: path.slice(prefix.length) };
+    }
+  }
+  return { provider: CONFIG.pathRouting.default, cleanPath: path };
+}
+
+function serveFavicon() {
+  const faviconBase64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACFElEQVQ4T2NkwA3+gwEYjIwMUsAABF9Q5NMjAfMgFZmKIMHzAxgj8U7bZEQ/ClWDCWoA/0G+ByVZnYMBpGcSDoQRSJkARgJzHgMsaaAzEg2zDMC6BSpkOu4VwM0LGFgAAYzKRQKCACJMJWdgQZqukC7LQHkguAEEagHEWVU7og7C4YwAiYQiK+RYYGZAEirEXVYtAFpCECJnQnoA9G+gEEb/AC18WfBhgVhPgDIbHgskB83GdCXYLhBlGLgJwHsAUE1IMhIiZGFpA7FBo6jLDBAzMDAwETGBZAYzLAFIhcLhUCGHRBAlIu0kbBpgDJ3BqAAYBmWTiLNNINajQwEcK2EyIG8Z2QFIgsgwGgQbIBQBZQGBG0ClBfCGJZAUGp4CN9YWBAADECIEA4VkpHiAAAAAElFTkSuQmCC";
+  return new Response(Uint8Array.from(atob(faviconBase64), c => c.charCodeAt(0)), {
+    status: 200,
+    headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=604800" }
+  });
+}
+
+async function checkAuth(request, password) {
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader) return false;
+  const [scheme, encoded] = authHeader.split(" ");
+  if (scheme !== "Basic") return false;
+  const decoded = atob(encoded);
+  const [username, pwd] = decoded.split(":");
+  return pwd === password;
+}
+
+function getProviderConfig(env, provider) {
+  const providerInfo = PROVIDERS[provider];
+  if (!providerInfo) {
+    throw { message: `Unknown provider: ${provider}`, status: 400 };
+  }
+  const config = {
+    provider: provider,
+    name: providerInfo.name,
+    icon: providerInfo.icon,
+    description: providerInfo.description
+  };
+  if (provider === "impossiblecloud") {
+    config.accessKey = env.IMPOSSIBLE_ACCESS_KEY_ID;
+    config.secretKey = env.IMPOSSIBLE_SECRET_ACCESS_KEY;
+    config.bucket = env.IMPOSSIBLE_BUCKET_NAME;
+    config.region = env.IMPOSSIBLE_REGION || providerInfo.defaultRegion;
+  } else if (provider === "wasabi") {
+    config.accessKey = env.WASABI_ACCESS_KEY_ID;
+    config.secretKey = env.WASABI_SECRET_ACCESS_KEY;
+    config.bucket = env.WASABI_BUCKET_NAME;
+    config.region = env.WASABI_REGION || providerInfo.defaultRegion;
+  }
+  config.endpoint = providerInfo.endpoints[config.region] || providerInfo.endpoints[providerInfo.defaultRegion];
+  if (!config.accessKey || !config.secretKey || !config.bucket || !config.endpoint) {
+    throw {
+      message: `Incomplete configuration for ${providerInfo.name}. Please check environment variables.`,
+      status: 500,
+    };
+  }
+  return config;
+}
+
+// --- AWSv4 SIGNING ---
+
+function awsUriEncode(str, encodeSlash = true) {
+  let encoded = encodeURIComponent(str).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  if (!encodeSlash) {
+    encoded = encoded.replace(/%2F/g, "/");
+  }
+  return encoded;
+}
+function createCanonicalQueryString(params) {
+  const sortedKeys = Object.keys(params).sort();
+  return sortedKeys.map((key) => `${awsUriEncode(key)}=${awsUriEncode(params[key])}`).join("&");
+}
+
+/**
+ * Generates headers for *proxying* a request (used by handleDownload/Stream)
+ */
+async function signRequest(providerConfig, method, path, queryParams = {}, payload = "", rangeHeader = null) {
+  const service = "s3";
+  const endpoint = `${providerConfig.bucket}.${providerConfig.endpoint}`;
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[:\-]|\.\d{3}/g, "").slice(0, 8);
+  const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, "");
+  const payloadHash = await sha256(payload);
+  const pathSegments = path.split("/").map((segment) => awsUriEncode(segment, true));
+  const canonicalUri = path ? "/" + pathSegments.join("/") : "/";
+  const canonicalQueryString = createCanonicalQueryString(queryParams);
+  const headersToSign = {
+    host: endpoint,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate,
+  };
+  if (rangeHeader) {
+    headersToSign["range"] = rangeHeader;
+  }
+  const sortedHeaderKeys = Object.keys(headersToSign).sort();
+  const canonicalHeaders = sortedHeaderKeys.map(key => `${key}:${headersToSign[key]}\n`).join('');
+  const signedHeaders = sortedHeaderKeys.join(';');
+  const canonicalRequest = `${method}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+  const algorithm = "AWS4-HMAC-SHA256";
+  const credentialScope = `${dateStamp}/${providerConfig.region}/${service}/aws4_request`;
+  const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256(canonicalRequest)}`;
+  const signingKey = await getSignatureKey(providerConfig.secretKey, dateStamp, providerConfig.region, service);
+  const signature = await hmacSha256(signingKey, stringToSign);
+  const authorizationHeader = `${algorithm} Credential=${providerConfig.accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const urlParams = new URLSearchParams(queryParams);
+  const urlString = `https://${endpoint}${canonicalUri}${urlParams.toString() ? "?" + urlParams.toString() : ""}`;
+  const fetchHeaders = {
+    "x-amz-date": amzDate,
+    "x-amz-content-sha256": payloadHash,
+    Authorization: authorizationHeader,
+  };
+  if (rangeHeader) {
+    fetchHeaders["range"] = rangeHeader;
+  }
+  return {
+    url: urlString,
+    headers: fetchHeaders,
+  };
+}
+
+/**
+ * NEW: Generates a presigned URL with signature in query parameters.
+ */
+async function generatePresignedUrl(providerConfig, cleanPath, expiresInSeconds) {
+    const service = "s3";
+    const endpoint = `${providerConfig.bucket}.${providerConfig.endpoint}`;
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, "");
+    const dateStamp = amzDate.slice(0, 8);
+    const credentialScope = `${dateStamp}/${providerConfig.region}/${service}/aws4_request`;
+
+    // 1. Create Query Params
+    const queryParams = {
+      "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+      "X-Amz-Credential": `${providerConfig.accessKey}/${credentialScope}`,
+      "X-Amz-Date": amzDate,
+      "X-Amz-Expires": expiresInSeconds,
+      "X-Amz-SignedHeaders": "host",
+    };
+
+    // 2. Create Canonical Query String (uses existing helper)
+    const canonicalQueryString = createCanonicalQueryString(queryParams);
+
+    // 3. Create Canonical Request
+    const canonicalUri = "/" + cleanPath.split("/").map(s => awsUriEncode(s, true)).join("/"); // Ensure slashes are encoded
+    const canonicalHeaders = `host:${endpoint}\n`;
+    const signedHeaders = "host";
+    const payloadHash = "UNSIGNED-PAYLOAD";
+    
+    const canonicalRequest = `GET\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+
+    // 4. Create String to Sign
+    const algorithm = "AWS4-HMAC-SHA256";
+    const stringToSign = `${algorithm}\n${amzDate}\n${credentialScope}\n${await sha256(canonicalRequest)}`;
+
+    // 5. Calculate Signature
+    const signingKey = await getSignatureKey(providerConfig.secretKey, dateStamp, providerConfig.region, service);
+    const signature = await hmacSha256(signingKey, stringToSign);
+
+    // 6. Assemble Final URL
+    return `https://${endpoint}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
+}
+
+
+// --- CRYPTO HELPERS (No changes) ---
+
+async function sha256(message) {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function hmacSha256(key, message) {
+  const encoder = new TextEncoder();
+  const keyData = typeof key === "string" ? encoder.encode(key) : key;
+  const cryptoKey = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(message));
+  const hashArray = Array.from(new Uint8Array(signature));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function getSignatureKey(key, dateStamp, regionName, serviceName) {
+  const encoder = new TextEncoder();
+  const kDate = await hmacSha256Raw(encoder.encode("AWS4" + key), dateStamp);
+  const kRegion = await hmacSha256Raw(kDate, regionName);
+  const kService = await hmacSha256Raw(kRegion, serviceName);
+  const kSigning = await hmacSha256Raw(kService, "aws4_request");
+  return kSigning;
+}
+async function hmacSha256Raw(key, message) {
+  const encoder = new TextEncoder();
+  const keyData = typeof key === "string" ? encoder.encode(key) : key;
+  const cryptoKey = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, encoder.encode(message));
+  return new Uint8Array(signature);
+}
+
+// --- S3 API HELPERS (Typo fixed) ---
+
+async function listObjects(providerConfig, prefix = "", delimiter = "/") {
+  const queryParams = { "list-type": "2", delimiter, "max-keys": "1000" };
+  if (prefix) {
+    queryParams.prefix = prefix;
+  }
+  const { url, headers } = await signRequest(providerConfig, "GET", "", queryParams);
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw { message: `Failed to list objects from ${providerConfig.name} (S3 Status: ${response.status}): ${errorText}`, status: response.status };
+  }
+  const xmlText = await response.text();
+  return parseListBucketResult(xmlText, providerConfig);
+}
+
+function parseListBucketResult(xml, providerConfig) {
+  const folders = [];
+  const files = [];
+  const routingPrefix = Object.keys(CONFIG.pathRouting).find(k => CONFIG.pathRouting[k] === providerConfig.provider) || "";
+  const prefixMatches = xml.matchAll(/<CommonPrefixes>.*?<Prefix>(.*?)<\/Prefix>.*?<\/CommonPrefixes>/gs);
+  for (const match of prefixMatches) {
+    const prefix = match[1];
+    const name = prefix.replace(/\/$/, "").split("/").pop();
+    const fullLinkPrefix = routingPrefix + prefix;
+    folders.push({ name, prefix: fullLinkPrefix, provider: providerConfig.provider });
+  }
+  const contentMatches = xml.matchAll(/<Contents>(.*?)<\/Contents>/gs);
+  for (const match of contentMatches) {
+    const content = match[1];
+    const keyMatch = content.match(/<Key>(.*?)<\/Key>/);
+    const sizeMatch = content.match(/<Size>(.*?)<\/Size>/);
+    const modifiedMatch = content.match(/<LastModified>(.*?)<\/LastModified>/);
+    if (keyMatch) {
+      const key = keyMatch[1];
+      if (key.endsWith("/")) continue;
+      const name = key.split("/").pop();
+      const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
+      const lastModified = modifiedMatch ? modifiedMatch[1] : "";
+      files.push({ name, key: routingPrefix + key, size, lastModified, provider: providerConfig.provider, providerName: providerConfig.name, providerIcon: providerConfig.icon });
+    }
+  }
+  return { folders, files };
+}
+
+// --- ROUTE HANDLERS (Upgraded) ---
+
+/**
+ * NEW: Handles the ?share=true request.
+ */
+async function handleShareLink(providerConfig, cleanPath, request) {
+  try {
+    // 604800 seconds = 7 days
+    const expiration = 604800; 
+    const url = await generatePresignedUrl(providerConfig, cleanPath, expiration);
+    
+    const response = {
+      success: true,
+      url: url,
+      expires_in_seconds: expiration
+    };
+    
+    const headers = new Headers({ "Content-Type": "application/json" });
+    addCorsHeaders(headers); // Add CORS so the JS can fetch it
+    
+    return new Response(JSON.stringify(response), { headers });
+    
+  } catch (error) {
+    const response = { success: false, error: error.message };
+    const headers = new Headers({ "Content-Type": "application/json" });
+    addCorsHeaders(headers);
+    
+    return new Response(JSON.stringify(response), { status: 500, headers });
+  }
+}
+
+async function handleDownload(providerConfig, cleanPath, request) {
+  if (!cleanPath) {
+    throw { message: "No file path provided", status: 400 };
+  }
+  const rangeHeader = request.headers.get("range") || null;
+  const { url, headers } = await signRequest(providerConfig, "GET", cleanPath, {}, "", rangeHeader);
+  const response = await fetch(url, { headers });
+  if (!response.ok && response.status !== 206) {
+    const errorText = await response.text();
+    throw { message: `Download failed from ${providerConfig.name} (S3 Status: ${response.status}): ${errorText}`, status: response.status };
+  }
+  const fileName = cleanPath.split("/").pop();
+  const fileType = fileName.split(".").pop().toLowerCase();
+  const contentType = getContentType(fileType);
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Content-Type", contentType);
+  newHeaders.set("Content-Disposition", `attachment; filename="${fileName}"`);
+  newHeaders.set("Cache-Control", "public, max-age=3600");
+  newHeaders.set("X-Provider", providerConfig.name);
+  addCorsHeaders(newHeaders);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: newHeaders });
+}
+
+async function handleStream(providerConfig, cleanPath, request) {
+  if (!cleanPath) {
+    throw { message: "No file path provided", status: 400 };
+  }
+  const rangeHeader = request.headers.get("range") || null;
+  const { url, headers } = await signRequest(providerConfig, "GET", cleanPath, {}, "", rangeHeader);
+  const response = await fetch(url, { headers });
+  if (!response.ok && response.status !== 206) {
+    const errorText = await response.text();
+    throw { message: `Stream failed from ${providerConfig.name} (S3 Status: ${response.status}): ${errorText}`, status: response.status };
+  }
+  const fileName = cleanPath.split("/").pop();
+  const fileType = fileName.split(".").pop().toLowerCase();
+  let contentType = getContentType(fileType);
+  if (fileType === "mkv" && CONFIG.experimentalMkvSupport) {
+    contentType = "video/webm";
+  }
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Content-Type", contentType);
+  newHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
+  newHeaders.set("Cache-Control", "public, max-age=3600");
+  newHeaders.set("X-Provider", providerConfig.name);
+  addCorsHeaders(newHeaders);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: newHeaders });
+}
+
+async function handlePreview(providerConfig, cleanPath, rawPath, request) {
+  if (!cleanPath) {
+    throw { message: "No file path provided", status: 400 };
+  }
+  const fileName = cleanPath.split("/").pop();
+  const fileType = fileName.split(".").pop().toLowerCase();
+  const videoFormats = ["mp4", "webm", "mkv", "avi", "mov", "m3u8"];
+  if (videoFormats.includes(fileType)) {
+    const userAgent = request.headers.get("User-Agent") || "";
+    const html = await handleVideoPreview(rawPath, fileName, fileType, userAgent);
+    return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" }});
+  }
+  const rangeHeader = request.headers.get("range") || null;
+  const { url, headers } = await signRequest(providerConfig, "GET", cleanPath, {}, "", rangeHeader);
+  const response = await fetch(url, { headers });
+  if (!response.ok && response.status !== 206) {
+    const errorText = await response.text();
+    throw { message: `Preview failed from ${providerConfig.name} (S3 Status: ${response.status}): ${errorText}`, status: response.status };
+  }
+  const contentType = getContentType(fileType);
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Content-Type", contentType);
+  newHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
+  newHeaders.set("Cache-Control", "public, max-age=3600");
+  newHeaders.set("X-Provider", providerConfig.name);
+  addCorsHeaders(newHeaders);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: newHeaders });
+}
+
+/**
+ * ROLLED BACK: Generates the original, self-contained HTML5 video player.
+ */
+async function handleVideoPreview(rawPath, fileName, fileType, userAgent) {
+  const isFirefox = userAgent.toLowerCase().includes("firefox");
+  const isChrome = userAgent.toLowerCase().includes("chrome");
+  const isSafari = userAgent.toLowerCase().includes("safari") && !isChrome;
+  const streamUrl = `/${rawPath}?stream`;
+  let browserInfo = "";
+  if (fileType === "mkv" && CONFIG.experimentalMkvSupport) {
+    if (isFirefox) {
+      browserInfo = `<div class="info-box firefox"><strong>🦊 Firefox Detected</strong><br>Your browser has good native MKV support. If playback fails, the file may use unsupported audio codecs (e.g., AC3, DTS).</div>`;
+    } else if (isChrome) {
+      browserInfo = `<div class="info-box chrome"><strong>🌐 Chrome Detected</strong><br>Chrome can play some MKV files. If playback fails, try downloading the file or use Firefox for better support.</div>`;
+    } else if (isSafari) {
+      browserInfo = `<div class="warning"><strong>⚠️ Safari Detected</strong><br>Safari has limited MKV support. We recommend downloading the file or using Firefox/Chrome.</div>`;
+    } else {
+      browserInfo = `<div class="info-box"><strong>ℹ️ MKV Playback</strong><br>Browser support varies. If playback fails, try downloading or using a different browser.</div>`;
+    }
+  }
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Preview - ${fileName}</title>
+  <style>
+    body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background-color: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+    video { width: 100%; max-height: 90vh; border-radius: 8px; outline: none; }
+    .info-container { padding: 20px; max-width: 800px; width: 100%; box-sizing: border-box; }
+    .info-box, .warning { padding: 15px 20px; margin-bottom: 20px; border-radius: 6px; font-size: 14px; line-height: 1.6; }
+    .info-box { background: #2196f3; }
+    .info-box.firefox { background: #ff7139; }
+    .info-box.chrome { background: #4285f4; }
+    .warning { background: #ff9800; color: #000; }
+  </style>
+</head>
+<body>
+  <div class="info-container">${browserInfo}</div>
+  <video controls preload="metadata" playsinline>
+    ${
+      fileType === "mkv" && CONFIG.experimentalMkvSupport
+        ? `<source src="${streamUrl}" type="video/webm; codecs=vp9,opus" /><source src="${streamUrl}" type="video/webm; codecs=vp8,opus" /><source src="${streamUrl}" type="video/x-matroska" />`
+        : `<source src="${streamUrl}" type="video/${fileType === "mp4" ? "mp4" : fileType === "webm" ? "webm" : "quicktime"}" />`
+    }
+    Your browser does not support the video tag or this video format.
+  </video>
+</body>
+</html>`;
+}
+
+async function handleBrowse(providerConfig, cleanPath, rawPath, request) {
+  const prefix = cleanPath ? (cleanPath.endsWith("/") ? cleanPath : cleanPath + "/") : "";
+  let result;
+  try {
+    result = await listObjects(providerConfig, prefix);
+  } catch (error) {
+    throw error;
+  }
+  const html = getBrowsePage(rawPath, result.folders, result.files, providerConfig, request);
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" });
+  return new Response(html, { headers });
+}
+
+// --- HTML PAGE GENERATORS ---
+
+function getContentType(ext) {
+  const types = {
+    html: "text/html", htm: "text/html", txt: "text/plain", css: "text/css", js: "text/javascript", json: "application/json", xml: "text/xml",
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", svg: "image/svg+xml", ico: "image/x-icon", webp: "image/webp",
+    mp4: "video/mp4", webm: "video/webm", mkv: "video/x-matroska", avi: "video/x-msvideo", mov: "video/quicktime", m3u8: "application/x-mpegURL",
+    mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", m4a: "audio/mp4", flac: "audio/flac",
+    pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    zip: "application/zip", rar: "application/x-rar-compressed", "7z": "application/x-7z-compressed", tar: "application/x-tar", gz: "application/gzip",
+  };
+  return types[ext] || "application/octet-stream";
+}
+function formatSize(bytes) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+function formatDate(dateString) {
+  const date = new Date(dateString);
+  return date.toLocaleString();
+}
+function getFileIcon(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  const icons = {
+    pdf: "📄", doc: "📝", docx: "📝", txt: "📝", xls: "📊", xlsx: "📊", csv: "📊", ppt: "📽️", pptx: "📽️",
+    jpg: "🖼️", jpeg: "🖼️", png: "🖼️", gif: "🖼️", svg: "🖼️", webp: "🖼️",
+    mp4: "🎬", avi: "🎬", mkv: "🎬", mov: "🎬", webm: "🎬", m3u8: "🎬",
+    mp3: "🎵", wav: "🎵", ogg: "🎵", flac: "🎵", m4a: "🎵",
+    zip: "📦", rar: "📦", "7z": "📦", tar: "📦", gz: "📦",
+    js: "💻", py: "💻", java: "💻", cpp: "💻", html: "💻", css: "💻",
+  };
+  return icons[ext] || "📄";
+}
+
+function getBrowsePage(currentPath, folders, files, providerConfig = null, request) {
+  const baseUrl = new URL(request.url).origin;
+  const pathParts = currentPath ? currentPath.split("/").filter((p) => p) : [];
+  const breadcrumbs = pathParts.map((part, index) => `<a href="/${pathParts.slice(0, index + 1).join("/")}">${part}</a>`).join(" / ");
+  const providerSwitcher = `<div class="provider-switcher"><span class="label">🌤️ Provider:</span>${Object.entries(CONFIG.pathRouting).filter(([prefix]) => prefix !== 'default').map(([prefix, providerKey]) => { const p = PROVIDERS[providerKey]; if (!p) return ''; return `<a href="/${prefix}" class="provider-btn ${providerConfig?.provider === providerKey ? "active" : ""}" title="${p.description}">${p.icon} ${p.name}</a>` }).join("")}<span class="strategy">Strategy: ${CONFIG.routingStrategy}</span></div>`;
+  const folderRows = folders.map(folder => `<tr class="folder-row ${folder.error ? "error-row" : ""}"><td class="icon">📁</td><td class="name"><a href="/${folder.prefix}">${folder.name}</a></td><td class="size">-</td><td class="modified">-</td><td class="provider">${folder.error ? "❌" : PROVIDERS[folder.provider]?.icon || ""}</td><td class="actions"><a href="/${folder.prefix}" class="btn">Open</a></td></tr>`).join("");
+  
+  // --- UPDATED FILE ROWS ---
+  const fileRows = files.map(file => { 
+    const absoluteStreamUrl = `${baseUrl}/${file.key}?stream`; 
+    // Note: We pass the raw 'file.key' to the new share function
+    return `
+    <tr class="file-row">
+      <td class="icon">${getFileIcon(file.name)}</td>
+      <td class="name">${file.name}</td>
+      <td class="size">${formatSize(file.size)}</td>
+      <td class="modified">${formatDate(file.lastModified)}</td>
+      <td class="provider" title="${file.providerName || ""}">${file.providerIcon || ""}</td>
+      <td class="actions">
+        <a href="/${file.key}?download" class="btn btn-download">Download</a>
+        <button class="btn btn-copy" onclick="copyToClipboard('${absoluteStreamUrl}', this)">Copy Link</button>
+        <button class="btn btn-share" onclick="generateShareLink('${file.key}', this)">Share (7d)</button>
+        ${isPreviewable(file.name) ? `<a href="/${file.key}?preview" class="btn btn-preview" target="_blank">Preview</a>` : ""}
+      </td>
+    </tr>` 
+  }).join("");
+  
+  const currentProviderInfo = providerConfig ? `<div class="current-provider">${providerConfig.icon} Currently browsing <strong>${providerConfig.name}</strong> • ${providerConfig.description}</div>` : "";
+  
+  // --- UPDATED HTML (CSS and JS) ---
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>${CONFIG.siteName}</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:${CONFIG.theme === "dark" ? "#1a1a1a" : "#f5f5f5"};color:${CONFIG.theme === "dark" ? "#e0e0e0" : "#333"};padding:20px;line-height:1.6}
+  .container{max-width:1400px;margin:0 auto}
+  header{display:flex;align-items:center;margin-bottom:20px;padding-bottom:20px;border-bottom:2px solid ${CONFIG.theme === "dark" ? "#333" : "#ddd"}}
+  .site-icon{font-size:48px;margin-right:20px}h1{font-size:32px;font-weight:600}
+  .subtitle{font-size:14px;color:${CONFIG.theme === "dark" ? "#888" : "#666"};margin-top:5px}
+  .provider-switcher{background:${CONFIG.theme === "dark" ? "#252525" : "#fff"};padding:15px 20px;border-radius:8px;margin-bottom:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .provider-switcher .label{font-weight:600}
+  .provider-btn{display:inline-block;text-decoration:none;padding:8px 15px;border:2px solid ${CONFIG.theme === "dark" ? "#444" : "#ddd"};background:transparent;color:${CONFIG.theme === "dark" ? "#e0e0e0" : "#333"};border-radius:6px;cursor:pointer;font-size:14px;transition:all .2s}
+  .provider-btn:hover{border-color:#0066cc}.provider-btn.active{background:#0066cc;color:#fff;border-color:#0066cc}
+  .strategy{margin-left:auto;font-size:12px;color:${CONFIG.theme === "dark" ? "#888" : "#666"};background:${CONFIG.theme === "dark" ? "#333" : "#f0f0f0"};padding:4px 8px;border-radius:4px}
+  .current-provider{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:12px 20px;border-radius:8px;margin-bottom:15px;text-align:center;font-size:14px}
+  .breadcrumb{background:${CONFIG.theme === "dark" ? "#252525" : "#fff"};padding:15px 20px;border-radius:8px;margin-bottom:20px;font-size:14px}
+  .breadcrumb a{color:#0066cc;text-decoration:none;transition:color .2s}.breadcrumb a:hover{color:#0052a3;text-decoration:underline}
+  table{width:100%;background:${CONFIG.theme === "dark" ? "#252525" : "#fff"};border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+  th{background:${CONFIG.theme === "dark" ? "#1e1e1e" : "#f8f8f8"};padding:15px;text-align:left;font-weight:600;border-bottom:2px solid ${CONFIG.theme === "dark" ? "#333" : "#e0e0e0"}}
+  td{padding:12px 15px;border-bottom:1px solid ${CONFIG.theme === "dark" ? "#333" : "#f0f0f0"}}
+  tr:last-child td{border-bottom:none}tr:hover{background:${CONFIG.theme === "dark" ? "#2a2a2a" : "#f9f9f9"}}
+  .error-row{background:${CONFIG.theme === "dark" ? "#2a1a1a" : "#fff5f5"}}
+  .icon{width:40px;text-align:center;font-size:20px}.name{font-weight:500}
+  .name a{color:${CONFIG.theme === "dark" ? "#4d9fff" : "#0066cc"};text-decoration:none}.name a:hover{text-decoration:underline}
+  .size{width:100px}.modified{width:180px;font-size:13px;color:${CONFIG.theme === "dark" ? "#888" : "#666"}}
+  .provider{width:40px;text-align:center;font-size:18px}
+  .actions{width:410px;white-space:nowrap}
+  .btn{display:inline-block;padding:6px 12px;margin-right:5px;background:#0066cc;color:#fff;text-decoration:none;border-radius:4px;font-size:12px;transition:background .2s;border:none;cursor:pointer;font-family:inherit}
+  .btn:hover{background:#0052a3}
+  .btn:disabled { background: #555; cursor: default; }
+  .btn-preview{background:#28a745}.btn-preview:hover{background:#218838}
+  .btn-copy{background:#6f42c1}.btn-copy:hover{background:#5a32a3}
+  .btn-share{background:#fd7e14}.btn-share:hover{background:#e36a00}
+  .empty{text-align:center;padding:60px 20px;color:${CONFIG.theme === "dark" ? "#666" : "#999"}}
+  footer{text-align:center;margin-top:40px;padding-top:20px;border-top:1px solid ${CONFIG.theme === "dark" ? "#333" : "#ddd"};color:${CONFIG.theme === "dark" ? "#666" : "#999"};font-size:14px}
+  .stats{background:${CONFIG.theme === "dark" ? "#252525" : "#fff"};padding:15px 20px;border-radius:8px;margin-top:20px;display:flex;gap:20px;font-size:14px}
+  .stat{display:flex;align-items:center;gap:5px}
+  @media (max-width:768px){.modified,.provider{display:none}.actions{width:auto}.btn{padding:5px 8px;font-size:11px;margin-bottom:5px}.provider-switcher{flex-direction:column;align-items:flex-start}}
+</style>
+</head><body><div class="container">
+  <header><div class="site-icon">${CONFIG.siteIcon}</div><div><h1>${CONFIG.siteName}</h1><div class="subtitle">🌤️ Unified Multi-Cloud Storage Interface</div></div></header>
+  ${providerSwitcher}${currentProviderInfo}
+  <div class="breadcrumb"><a href="/">🏠 Home</a>${breadcrumbs ? " / " + breadcrumbs : ""}</div>
+  ${folders.length === 0 && files.length === 0 ? `<div class="empty"><h2>📭 Empty Folder</h2><p>No files or folders here</p></div>` : `<table><thead><tr><th class="icon"></th><th class="name">Name</th><th class="size">Size</th><th class="modified">Modified</th><th class="provider">Provider</th><th class="actions">Actions</th></tr></thead><tbody>${folderRows}${fileRows}</tbody></table>`}
+  <div class="stats"><div class="stat">📁 <span>${folders.length} folders</span></div><div class="stat">📄 <span>${files.length} files</span></div><div class="stat">🔄 <span>Strategy: ${CONFIG.routingStrategy}</span></div><div class="stat">⚡ <span>Providers: ${CONFIG.providerPriority.join(", ")}</span></div></div>
+  <footer><p>🌤️ Multi-Cloud Storage powered by Cloudflare Workers</p><p>${Object.values(PROVIDERS).map((p) => `${p.icon} ${p.name}`).join(" • ")}</p></footer>
+</div>
+<script>
+  function copyToClipboard(text, element, originalText = null) {
+    if (!navigator.clipboard) {
+      alert('Clipboard API not available. Please copy manually.');
+      return;
+    }
+    navigator.clipboard.writeText(text).then(() => {
+      const textToRestore = originalText || element.textContent;
+      element.textContent = 'Copied!';
+      element.disabled = true;
+      setTimeout(() => {
+        element.textContent = textToRestore;
+        element.disabled = false;
+      }, 2000);
+    }).catch(err => {
+      console.error('Failed to copy text: ', err);
+      alert('Failed to copy link.');
+      element.disabled = false;
+    });
+  }
+
+  async function generateShareLink(fileKey, element) {
+    const originalText = element.textContent;
+    element.textContent = 'Generating...';
+    element.disabled = true;
+    
+    try {
+      const response = await fetch('/' + fileKey + '?share=true');
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        // Pass the originalText so it restores correctly after "Copied!"
+        copyToClipboard(data.url, element, originalText); 
+      } else {
+        throw new Error(data.error || 'Failed to generate link');
+      }
+    } catch (err) {
+      console.error('Failed to generate share link:', err);
+      element.textContent = 'Error!';
+      setTimeout(() => {
+        element.textContent = originalText;
+        element.disabled = false;
+      }, 3000);
+    }
+  }
+</script>
+</body></html>`;
+}
+function isPreviewable(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  const previewable = ["mp4", "webm", "mkv", "avi", "mov", "m3u8", "jpg", "jpeg", "png", "gif", "svg", "webp", "mp3", "wav", "ogg", "m4a", "flac", "pdf", "txt"];
+  return previewable.includes(ext);
+}
+function getPasswordPage() {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Protected - ${CONFIG.siteName}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#1a1a1a;color:#e0e0e0;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{text-align:center;background:#252525;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.3)}h1{margin-bottom:20px}p{margin-bottom:30px;color:#999}</style></head><body><div class="container"><h1>🔒 Protected Area</h1><p>Please enter the password to access this multi-cloud storage</p></div></body></html>`;
+}
+function getErrorPage(message) {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Error - ${CONFIG.siteName}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#1a1a1a;color:#e0e0e0;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{text-align:center;background:#252525;padding:40px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,.3);max-width:600px}h1{color:#ff6b6b;margin-bottom:20px}p{margin-bottom:30px;word-break:break-word;text-align:left;background:#111;padding:15px;border-radius:6px;font-family:monospace;white-space:pre-wrap}a{color:#4d9fff;text-decoration:none;padding:10px 20px;background:#333;border-radius:6px;display:inline-block;transition:background .2s}a:hover{background:#444}</style></head><body><div class="container"><h1>⚠️ Multi-Cloud Error</h1><p>${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p><a href="/">← Back to Home</a></div></body></html>`;
+}
