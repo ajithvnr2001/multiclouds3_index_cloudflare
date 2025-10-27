@@ -2,7 +2,7 @@
 
 A unified, **CDN-powered**, serverless web interface to browse, preview, share, and delete files stored in **ImpossibleCloud**, **Wasabi**, **Cloudflare R2**, and **Oracle Cloud (OCI)** S3-compatible storage. Powered by Cloudflare Workers with advanced caching and optimization for **blazing-fast video streaming** and file delivery.
 
-> 🚀 **NEW:** Now with intelligent CDN caching, smart link recommendations, Range request support for MX Player/VLC, and 10x faster seeking!
+> 🚀 **NEW v6.2:** Global Search across all clouds, Bulk Link Export (6 formats), Bulk Delete with safety features, and animated floating toolbar!
 
 -----
 
@@ -16,7 +16,11 @@ A unified, **CDN-powered**, serverless web interface to browse, preview, share, 
   - 🔗 **Dual Share Links:**
       - **🚀 CDN Link:** Worker URL with global CDN caching (perfect for small-medium files)
       - **🔗 Direct S3 Link:** Presigned or public URLs (best for large files or compatibility)
-  - 🗑️ **Delete Files:** Remove files directly from your buckets via the web interface.
+  - 🔍 **Global Search:** Search for files across all configured cloud providers simultaneously.
+  - 📦 **Bulk Operations:** Select multiple files with checkboxes and perform bulk actions:
+      - **Export Links:** Export CDN, Direct, or Download links in multiple formats (TXT, JSON, Markdown)
+      - **Bulk Delete:** Delete multiple files at once with confirmation
+  - 🗑️ **Delete Files:** Remove files directly from your buckets via the web interface (single or bulk).
   - 🔒 **Password Protection:** Optional global password protection using HTTP Basic Auth.
   - 🎨 **Beautiful Themes:** 6 themes (Dark, Light, Blue, Purple, Sunset, Forest) with responsive mobile design.
   - 🌍 **Edge Deployment:** Deploy globally on the Cloudflare edge network for ultra-low latency.
@@ -160,6 +164,141 @@ The interface automatically shows you which button to use with visual cues!
 
 -----
 
+## 🔍 Global Search
+
+Search for files across **all your configured cloud providers** simultaneously!
+
+### **How to Use:**
+1. Use the search box at the top of the interface
+2. Enter your search term (minimum 2 characters)
+3. Results show files from ImpossibleCloud, Wasabi, R2, and OCI together
+4. Each result displays:
+   - File name, size, and last modified date
+   - Provider icon and name
+   - Direct actions (Preview, Download, Share, Delete)
+
+### **Features:**
+- ✅ **Multi-cloud:** Searches all providers at once
+- ✅ **Recursive:** Searches all folders and subfolders
+- ✅ **Fast:** Uses parallel provider queries
+- ✅ **Cached:** Search results cached for 5 minutes
+- ✅ **Real-time:** Live file information from each provider
+
+### **Example:**
+```
+Search: "video"
+Results:
+  - video1.mp4 (ImpossibleCloud) - 250 MB
+  - vacation-video.mkv (Wasabi) - 1.2 GB
+  - video-backup.mp4 (R2) - 500 MB
+```
+
+-----
+
+## 📦 Bulk Operations
+
+Select multiple files and perform batch operations with ease!
+
+### **Bulk Export Links**
+Export file links in various formats for easy sharing or documentation:
+
+#### **Available Formats:**
+
+1. **🚀 CDN Links**
+   - Worker-accelerated URLs with caching
+   - Format: `https://worker.dev/provider/path/file.ext?stream`
+   - Best for: Repeated viewing, streaming
+
+2. **🔗 Direct Links** 
+   - Presigned S3 URLs (7-day expiry)
+   - Direct from storage provider
+   - Best for: Large files, maximum compatibility
+
+3. **⬇️ Download Links**
+   - Force-download URLs through worker
+   - Format: `https://worker.dev/provider/path/file.ext?download`
+   - Best for: Batch downloads, download managers
+
+4. **📋 All Links**
+   - Combined export with all three link types
+   - Organized by category
+   - Best for: Complete link reference
+
+5. **📄 JSON Export**
+   - Structured data with metadata
+   ```json
+   {
+     "fileName": "video.mp4",
+     "provider": "ImpossibleCloud",
+     "cdnUrl": "https://...",
+     "directUrl": "https://...",
+     "downloadUrl": "https://..."
+   }
+   ```
+   - Best for: API integration, automation
+
+6. **📝 Markdown Export**
+   - Formatted documentation
+   ```markdown
+   ## video.mp4
+   - **Provider:** ☁️ ImpossibleCloud
+   - **CDN Link:** https://...
+   - **Direct Link:** https://...
+   - **Download Link:** https://...
+   ```
+   - Best for: Documentation, README files
+
+#### **Export Features:**
+- ✅ Auto-copy to clipboard
+- ✅ Automatic file download
+- ✅ Formatted output with headers
+- ✅ Timestamps and file counts
+- ✅ Multi-provider support
+
+### **Bulk Delete**
+Delete multiple files at once across all providers:
+
+#### **Features:**
+- ⚠️ **Confirmation dialog** prevents accidents
+- 📊 **Progress tracking** shows deletion status
+- ✅ **Detailed results** for each file (success/failure)
+- 🔄 **Auto-refresh** after completion
+- 🛡️ **Safe operation** with error handling
+
+#### **How to Use:**
+1. Check boxes next to files you want to delete
+2. Click 🗑️ **Delete** button in the floating toolbar
+3. Confirm deletion in the popup dialog
+4. Watch progress notifications
+5. Page auto-reloads with updated file list
+
+#### **Safety Features:**
+```
+Step 1: Select files → checkboxes
+Step 2: Click Delete → confirmation dialog
+Step 3: Confirm → "Are you sure you want to delete X file(s)?"
+Step 4: Progress → "Deleting 5 files..."
+Step 5: Results → "Deleted 4 of 5 files!"
+Step 6: Errors → "Failed to delete: protected.txt"
+Step 7: Auto-reload → Fresh file list
+```
+
+### **Floating Toolbar**
+When files are selected, an animated toolbar slides up from the bottom with 9 buttons:
+
+```
+[X files selected] [🚀 CDN] [🔗 Direct] [⬇️ Download] [📋 All] [📄 JSON] [📝 MD] [🗑️ Delete] [✖️ Clear]
+```
+
+#### **Toolbar Features:**
+- 🎨 **Color-coded buttons** with gradient styling
+- 📊 **File counter** shows selected count
+- ✨ **Smooth animation** slides up on selection
+- 🎯 **Quick actions** without page navigation
+- ✖️ **Clear button** to deselect all
+
+-----
+
 ## 📈 Performance Tips
 
 ### **For MX Player / VLC Users:**
@@ -193,7 +332,7 @@ Edit the `CONFIG` object at the top of the Worker code to customize your deploym
 const CONFIG = {
   siteName: "Multi-Cloud S3 Index",
   siteIcon: "🌤️",
-  theme: "dark", // "dark" or "light"
+  theme: "dark", // "dark", "light", "blue", "purple", "sunset", "forest"
   passwordProtected: false,
   password: "", // If protected, set a strong password here
   experimentalMkvSupport: true,
@@ -205,13 +344,49 @@ const CONFIG = {
     "oci/": "oraclecloud",
     default: "impossiblecloud" // Provider to show at the root path "/"
   },
-  providerPriority: ["impossiblecloud", "wasabi", "cloudflarer2", "oraclecloud"]
+  providerPriority: ["impossiblecloud", "wasabi", "cloudflarer2", "oraclecloud"],
+  enableGlobalSearch: true, // Enable/disable global search feature
+  searchCacheTime: 300, // Search results cache time in seconds (5 minutes)
+  defaultSort: { field: "name", direction: "asc" } // Default sorting
 };
 ```
 
 -----
 
 ## 🆕 What's New in v6
+
+### **Version 6.2 - Bulk Operations & Global Search** 🎯
+
+#### **New Features:**
+
+**1. Global Search** 🔍
+- Search files across **all cloud providers** simultaneously
+- Recursive search through all folders and subfolders
+- Real-time results with provider icons
+- Cached results for 5 minutes
+- Direct actions on search results
+
+**2. Bulk Link Export** 📦
+- Select multiple files with checkboxes
+- Export in 6 formats:
+  - CDN Links, Direct Links, Download Links
+  - All Links (combined), JSON, Markdown
+- Auto-copy to clipboard + file download
+- Formatted output with headers and timestamps
+- Works across all providers
+
+**3. Bulk Delete** 🗑️
+- Delete multiple files at once
+- Confirmation dialog for safety
+- Progress tracking with detailed results
+- Shows success/failure for each file
+- Auto-refresh after completion
+
+**4. Floating Toolbar** ✨
+- Animated slide-up toolbar when files selected
+- 9 action buttons with gradient styling
+- File counter and clear selection
+- Smooth UX with toast notifications
 
 ### **Version 6.0 - Performance Update** 🚀
 
@@ -296,6 +471,15 @@ Still **100% FREE** on Cloudflare Workers free tier! 🎉
   - **Video Won't Seek in MX Player:** First time seeking will always fetch from S3. After that, seeks are cached and instant.
   - **HLS Segments Not Prefetching:** Ensure your segment naming follows the pattern: `segment-0.ts`, `segment-1.ts` or `segment0.ts`, `segment1.ts`.
   - **MKV Not Playing:** Enable `experimentalMkvSupport: true` in CONFIG. Browser support varies - Firefox has best MKV support.
+
+### **Global Search & Bulk Operations**
+  - **Search Not Working:** Ensure `enableGlobalSearch: true` in CONFIG. Check that providers are properly configured.
+  - **No Results Found:** Global search is case-sensitive. Try different search terms or check provider connectivity.
+  - **Bulk Export Fails:** Ensure files are from the same provider or mixed providers with valid credentials.
+  - **Bulk Delete Not Working:** Requires S3 `DeleteObject` permission on your API keys. Check IAM policies.
+  - **Toolbar Not Showing:** Select at least one file using the checkbox. The toolbar slides up automatically.
+  - **Presigned URLs Invalid:** Direct links expire after 7 days. Re-export if needed.
+  - **Download Links Don't Force Download:** Some browsers may preview instead. Use right-click → Save As.
 
 -----
 
