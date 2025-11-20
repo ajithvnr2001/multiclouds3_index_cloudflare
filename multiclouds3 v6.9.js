@@ -4108,79 +4108,121 @@ function getBrowsePage(currentPath, folders, files, providerConfig = null, reque
   }
 
   @media (max-width:768px){
-    .container{margin:16px;padding:24px}
-    .header-content{flex-direction:column;gap:20px;text-align:center}
+    .container{margin:12px;padding:16px}
+    .header-content{flex-direction:column;gap:16px;text-align:center}
+
+    /* 2-column provider grid for mobile */
+    .provider-grid{grid-template-columns:repeat(2, 1fr); gap: 10px;}
+    .provider-card{padding:12px;}
+    .provider-icon{font-size:24px;margin-bottom:8px;}
+    .provider-name{font-size:14px;}
+
     .file-grid{grid-template-columns:1fr}
-    .file-card{flex-direction:column;text-align:center}
-    .card-actions{justify-content:center;flex-wrap:wrap}
-    .provider-grid{grid-template-columns:1fr}
-    .stats{flex-direction:column;gap:16px}
+
+    /* Compact stats */
+    .stats{flex-direction:column;gap:12px;padding:16px;}
+
     .breadcrumb-list{flex-wrap:wrap}
     .control-group{flex-direction:column;gap:12px}
-    .search-input{min-width:auto;width:100%}
+
+    /* Prevent iOS zoom on inputs */
+    .search-input{min-width:auto;width:100%;font-size:16px;}
+    select, input, textarea {font-size: 16px !important;}
+
     .sort-group{flex-wrap:wrap;justify-content:center}
     .view-switcher{margin-left:0;margin-top:8px}
 
-    /* Force list view layout on mobile */
+    /* Improved Mobile List View */
     .file-grid.list-view .file-card{
-      flex-direction:column;
-      text-align:center;
-      padding:0;
+      flex-direction:row;
+      flex-wrap:wrap;
+      text-align:left;
+      padding:12px;
+      gap:12px;
+      align-items:center;
     }
 
+    /* Compact Header in List View */
     .file-grid.list-view .card-header{
       flex-direction:column;
-      padding:20px 24px 16px;
-      border-bottom:1px solid var(--border);
-      background:linear-gradient(135deg, var(--surface-secondary), var(--surface));
-      width:100%;
+      padding:0;
+      border:none;
+      background:transparent;
+      width:auto;
       min-width:auto;
+      gap:4px;
     }
 
     .file-grid.list-view .file-icon-large{
-      font-size:3rem;
+      font-size:2.2rem;
     }
 
     .file-grid.list-view .card-badge{
-      padding:4px 12px;
-      font-size:11px;
+      padding:2px 6px;
+      font-size:9px;
     }
 
+    /* Content area */
     .file-grid.list-view .card-content{
+      flex:1;
       flex-direction:column;
-      padding:20px 24px;
-      gap:12px;
+      padding:0;
+      gap:4px;
       align-items:flex-start;
+      min-width: 0; /* Allow text truncation */
     }
 
     .file-grid.list-view .file-name{
       min-width:auto;
       width:100%;
-      font-size:18px;
+      font-size:16px;
+      margin-bottom:4px;
     }
 
     .file-grid.list-view .file-meta{
-      flex-direction:column;
-      gap:8px;
+      flex-direction:row;
+      flex-wrap:wrap;
+      gap:10px;
       width:100%;
+      border:none;
+      padding:0;
+      margin:0;
     }
 
+    .file-grid.list-view .meta-item{
+      font-size:12px;
+    }
+
+    /* Actions Bar */
     .file-grid.list-view .card-actions{
-      padding:16px 24px 20px;
-      border-top:1px solid var(--border);
-      background:var(--surface-secondary);
-      width:100%;
-      justify-content:center;
-      flex-wrap:wrap;
+      padding:0;
+      border:none;
+      background:transparent;
+      width:auto;
+      justify-content:flex-end;
+      flex-wrap:nowrap;
+      gap:6px;
+      margin-left:auto; /* Push to right or new line if wrapped */
     }
 
     .file-grid.list-view .btn{
-      width:44px;
-      height:44px;
+      width:36px;
+      height:36px;
     }
 
     .file-grid.list-view .btn-icon{
-      font-size:16px;
+      font-size:14px;
+    }
+
+    /* Adjust for very small screens */
+    @media (max-width: 400px) {
+       .file-grid.list-view .card-actions {
+         width: 100%;
+         justify-content: space-between;
+         margin-top: 8px;
+         border-top: 1px solid var(--border);
+         padding-top: 8px;
+       }
     }
   }
 
