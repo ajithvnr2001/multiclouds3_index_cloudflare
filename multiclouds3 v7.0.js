@@ -336,6 +336,15 @@ function jsAttr(value) {
     .replace(/>/g, "&gt;");
 }
 
+// Build a safe Content-Disposition header value. Strips characters that would break
+// the quoted ASCII filename (or crash the Headers API), and adds an RFC 5987
+// filename* fallback so Unicode names are preserved.
+function contentDisposition(disposition, name) {
+  const raw = String(name == null ? "" : name);
+  const ascii = raw.replace(/[\\"\r\n]/g, "_");
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(raw)}`;
+}
+
 // Constant-time string comparison to avoid auth timing side-channels.
 function timingSafeEqual(a, b) {
   const sa = String(a == null ? "" : a);
@@ -685,8 +694,9 @@ async function hmacSha256Raw(key, message) {
 
 // --- S3 API HELPERS ---
 
-// Decode a value returned inside S3 list XML. With encoding-type=url the Key/Prefix/
-// token values are percent-encoded; we also defensively decode XML entities.
+// Decode a value returned inside S3 list XML. With encoding-type=url the
+// Key/Prefix/Delimiter/StartAfter values are percent-encoded (RFC 3986: space=%20,
+// literal '+' is preserved); we also defensively decode XML entities.
 function decodeS3Value(value, urlEncoded) {
   let v = String(value == null ? "" : value)
     .replace(/&lt;/g, "<")
@@ -697,7 +707,8 @@ function decodeS3Value(value, urlEncoded) {
     .replace(/&amp;/g, "&");
   if (urlEncoded) {
     try {
-      v = decodeURIComponent(v.replace(/\+/g, "%20"));
+      // NOTE: do NOT convert '+' to space — S3 uses percent-encoding, so '+' is literal.
+      v = decodeURIComponent(v);
     } catch {
       /* leave as-is if not valid percent-encoding */
     }
@@ -773,8 +784,10 @@ function parseListBucketResult(xml, providerConfig) {
   }
   const truncatedMatch = xml.match(/<IsTruncated>(.*?)<\/IsTruncated>/);
   const isTruncated = truncatedMatch ? truncatedMatch[1].trim() === "true" : false;
+  // The continuation token is NOT affected by encoding-type=url, so do not URL-decode
+  // it (that would corrupt base64 tokens containing '+', '/', or '='). Entity-decode only.
   const tokenMatch = xml.match(/<NextContinuationToken>(.*?)<\/NextContinuationToken>/);
-  const nextToken = tokenMatch ? decodeS3Value(tokenMatch[1], true) : null;
+  const nextToken = tokenMatch ? decodeS3Value(tokenMatch[1], false) : null;
   return { folders, files, isTruncated, nextToken };
 }
 
@@ -2377,6 +2390,9 @@ async function handleAIChat(request, env) {
 
     const requestOrigin = new URL(request.url).origin;
     const toolDefs = agentToolsForOpenAI();
+    // Native tool-calling is attempted first; if the model/provider rejects the
+    // `tools` parameter we transparently fall back to the text protocol.
+    let useTools = !!CONFIG.enableAgenticAI;
 
     // Agentic reasoning loop: native function-calling with a text-protocol fallback.
     let iterations = 0;
@@ -2388,29 +2404,40 @@ async function handleAIChat(request, env) {
       iterations++;
       console.log(`[Agent] Iteration ${iterations}`);
 
-      const payload = {
-        model: CONFIG.aiModel,
-        messages: messages,
-        max_tokens: 1024,
-        temperature: 0.7
+      const doCall = (withTools) => {
+        const payload = {
+          model: CONFIG.aiModel,
+          messages: messages,
+          max_tokens: 1024,
+          temperature: 0.7
+        };
+        if (withTools) {
+          payload.tools = toolDefs;
+          payload.tool_choice = 'auto';
+        }
+        return fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': requestOrigin,
+            'X-Title': CONFIG.siteName
+          },
+          body: JSON.stringify(payload)
+        }, { retries: 2, timeoutMs: 45000 });
       };
-      // Advertise tools for native function-calling when agentic mode is on.
-      if (CONFIG.enableAgenticAI) {
-        payload.tools = toolDefs;
-        payload.tool_choice = 'auto';
-      }
 
       // Call OpenRouter with timeout + retry/backoff for resilience.
-      const openrouterResponse = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': requestOrigin,
-          'X-Title': CONFIG.siteName
-        },
-        body: JSON.stringify(payload)
-      }, { retries: 2, timeoutMs: 45000 });
+      let openrouterResponse = await doCall(useTools);
+
+      // Some models/providers reject the `tools` parameter with a 4xx. Disable
+      // native tool-calling for the rest of the session and retry once; the
+      // system prompt already describes the TOOL_CALL: text protocol.
+      if (!openrouterResponse.ok && useTools && [400, 404, 422, 501].includes(openrouterResponse.status)) {
+        console.warn(`[Agent] 'tools' parameter rejected (status ${openrouterResponse.status}); falling back to text protocol`);
+        useTools = false;
+        openrouterResponse = await doCall(false);
+      }
 
       if (!openrouterResponse.ok) {
         const errorText = await openrouterResponse.text();
@@ -2707,7 +2734,7 @@ async function handleDownload(providerConfig, cleanPath, request, ctx) {
   const contentType = getContentType(fileType);
   const newHeaders = new Headers(response.headers);
   newHeaders.set("Content-Type", contentType);
-  newHeaders.set("Content-Disposition", `attachment; filename="${fileName}"`);
+  newHeaders.set("Content-Disposition", contentDisposition("attachment", fileName));
   newHeaders.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
   newHeaders.set("CF-Cache-Status", "MISS");
   newHeaders.set("X-Provider", providerConfig.name);
@@ -2789,7 +2816,7 @@ async function handleStream(providerConfig, cleanPath, request, ctx) {
   }
   const newHeaders = new Headers(response.headers);
   newHeaders.set("Content-Type", contentType);
-  newHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
+  newHeaders.set("Content-Disposition", contentDisposition("inline", fileName));
   newHeaders.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
   newHeaders.set("CF-Cache-Status", response.status === 200 ? "MISS" : "BYPASS");
   newHeaders.set("X-Provider", providerConfig.name);
@@ -2898,7 +2925,7 @@ async function handlePreview(providerConfig, cleanPath, rawPath, request, ctx) {
   const contentType = getContentType(fileType);
   const newHeaders = new Headers(response.headers);
   newHeaders.set("Content-Type", contentType);
-  newHeaders.set("Content-Disposition", `inline; filename="${fileName}"`);
+  newHeaders.set("Content-Disposition", contentDisposition("inline", fileName));
   newHeaders.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
   newHeaders.set("CF-Cache-Status", response.status === 200 ? "MISS" : "BYPASS");
   newHeaders.set("X-Provider", providerConfig.name);
@@ -2915,7 +2942,9 @@ async function handleVideoPreview(rawPath, fileName, fileType, userAgent) {
   const isFirefox = userAgent.toLowerCase().includes("firefox");
   const isChrome = userAgent.toLowerCase().includes("chrome");
   const isSafari = userAgent.toLowerCase().includes("safari") && !isChrome;
-  const streamUrl = `/${rawPath}?stream`;
+  // Encode the path for a valid URL, then HTML-escape for safe attribute embedding.
+  const streamUrl = escapeHtml('/' + rawPath.split('/').map(encodeURIComponent).join('/') + '?stream');
+  const fileNameText = escapeHtml(fileName);
   let browserInfo = "";
   if (fileType === "mkv" && CONFIG.experimentalMkvSupport) {
     if (isFirefox) {
@@ -2933,7 +2962,7 @@ async function handleVideoPreview(rawPath, fileName, fileType, userAgent) {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Preview - ${fileName}</title>
+  <title>Preview - ${fileNameText}</title>
   <style>
     body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; background-color: #000; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; }
     video { width: 100%; max-height: 90vh; border-radius: 8px; outline: none; }
