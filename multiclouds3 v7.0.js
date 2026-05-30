@@ -831,7 +831,10 @@ async function handleShareLink(providerConfig, cleanPath, request) {
     // CDN Link (Worker URL - cached, fast for repeated access)
     if (useCDN) {
       const baseUrl = url.origin;
-      const cdnUrl = `${baseUrl}/${cleanPath}?stream`;
+      // Re-add the provider routing prefix so the CDN link routes to the correct
+      // provider (without it, the link would fall back to the default provider).
+      const routingPrefix = Object.keys(CONFIG.pathRouting).find(k => k !== 'default' && CONFIG.pathRouting[k] === providerConfig.provider) || '';
+      const cdnUrl = `${baseUrl}/${routingPrefix}${cleanPath}?stream`;
       
       const response = {
         success: true,

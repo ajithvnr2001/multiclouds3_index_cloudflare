@@ -1,0 +1,804 @@
+openapi: 3.1.0
+info:
+  title: Multi-Cloud S3 Index API
+  version: 7.0.0
+  summary: Unified, CDN-powered, serverless multi-cloud S3 browser with an autonomous AI agent and a remote MCP server.
+  description: |
+    HTTP API for the **Multi-Cloud S3 Index** Cloudflare Worker (v7.0). A single Worker
+    routes requests to one of four S3-compatible providers based on a path prefix, signs
+    requests with AWS Signature V4, and serves a browsable HTML UI plus JSON/binary APIs.
+
+    ## Provider routing
+    The first path segment selects the provider:
+
+    | Prefix        | Provider           | `provider` id    |
+    |---------------|--------------------|------------------|
+    | `/impossible/`| ImpossibleCloud    | `impossiblecloud`|
+    | `/wasabi/`    | Wasabi             | `wasabi`         |
+    | `/r2/`        | Cloudflare R2      | `cloudflarer2`   |
+    | `/oci/`       | Oracle Cloud (OCI) | `oraclecloud`    |
+    | (none)        | default provider   | `impossiblecloud`|
+
+    Everything after the prefix is the **object key** (it may contain `/`).
+
+    ## "Operations" are query flags
+    The same resource URL behaves differently depending on a query flag:
+    `?download`, `?preview`, `?stream`, `?share` (optionally `&cdn=true`). With no flag,
+    a `GET` returns the HTML browser (for a "folder" key) or is treated as a listing.
+
+    Global/utility operations are detected **before** provider routing and conventionally
+    target `/`: `?search=`, `?bulkExport=&files=`, `?bulkDelete&files=`, and `?aiChat` (POST).
+
+    ## Authentication
+    All endpoints except `OPTIONS` and `/favicon.ico` require **HTTP Basic** auth
+    (WebDAV-style username + password) when `passwordProtected` is enabled. The `/mcp`
+    endpoint additionally accepts a **Bearer token** (`MCP_TOKEN`). Auth **fails closed**
+    if no credentials are configured.
+
+    ## Content safety
+    All file/folder names rendered into HTML are escaped. Error responses hide technical
+    details unless `CONFIG.debug` is enabled.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  contact:
+    name: Project repository
+    url: https://github.com/ajithvnr2001/multiclouds3_index_cloudflare
+
+servers:
+  - url: https://{worker}.{subdomain}.workers.dev
+    description: Cloudflare Workers deployment
+    variables:
+      worker:
+        default: multicloud-s3-index
+      subdomain:
+        default: your-account
+  - url: https://{customDomain}
+    description: Custom domain
+    variables:
+      customDomain:
+        default: files.example.com
+
+tags:
+  - name: Browse
+    description: HTML file/folder browser and listings.
+  - name: Files
+    description: Per-object operations (download, stream, preview, share, delete).
+  - name: Search
+    description: Cross-provider global search.
+  - name: Bulk
+    description: Bulk link export and bulk delete.
+  - name: AI Agent
+    description: Autonomous AI assistant (OpenRouter-backed) with tool use.
+  - name: MCP
+    description: Remote Model Context Protocol server (JSON-RPC 2.0).
+  - name: System
+    description: CORS preflight and favicon.
+
+security:
+  - basicAuth: []
+
+paths:
+  /:
+    get:
+      tags: [Browse, Search, Bulk]
+      operationId: getRootOrUtility
+      summary: Browse root, or run search / bulk-export / bulk-delete
+      description: |
+        Behavior depends on query parameters (checked in this order):
+
+        - `?search=<q>`   → cross-provider search results page (HTML).
+        - `?bulkExport=<type>&files=<list>` → exported links (text/markdown/json).
+        - `?bulkDelete&files=<list>` → bulk delete (JSON result).
+        - none → HTML browser for the **default** provider root.
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/BulkExportType'
+        - $ref: '#/components/parameters/BulkDeleteFlag'
+        - $ref: '#/components/parameters/FilesList'
+      responses:
+        '200':
+          description: HTML page, exported links, or bulk-delete JSON depending on the query.
+          content:
+            text/html:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+              examples:
+                cdnExport:
+                  $ref: '#/components/examples/BulkExportText'
+            text/markdown:
+              schema:
+                type: string
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/BulkDeleteResult'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/BulkExportLinkEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerErrorHtml'
+    post:
+      tags: [AI Agent]
+      operationId: postAiChat
+      summary: Send a message to the AI agent
+      description: |
+        Requires `?aiChat` in the query string and a JSON body. The agent runs an
+        autonomous reasoning loop (native OpenRouter tool-calling with a text-protocol
+        fallback) and may invoke any of the 11 tools before replying.
+      parameters:
+        - name: aiChat
+          in: query
+          required: true
+          description: Presence of this flag routes the POST to the AI chat handler.
+          schema:
+            type: string
+            example: ''
+          allowEmptyValue: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiChatRequest'
+            examples:
+              simple:
+                value:
+                  message: "Find all mp4 files and show the largest ones"
+                  conversationHistory: []
+      responses:
+        '200':
+          description: Agent reply, including any tool calls performed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiChatResponse'
+              examples:
+                ok:
+                  $ref: '#/components/examples/AiChatOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: AI error (e.g., missing `OPENROUTER_API_KEY`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiChatError'
+    options:
+      tags: [System]
+      operationId: optionsRoot
+      summary: CORS preflight
+      security: []
+      responses:
+        '204':
+          $ref: '#/components/responses/CorsPreflight'
+
+  /favicon.ico:
+    get:
+      tags: [System]
+      operationId: getFavicon
+      summary: Site favicon
+      security: []
+      responses:
+        '200':
+          description: PNG favicon (cached 7 days).
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+
+  /{provider}/:
+    parameters:
+      - $ref: '#/components/parameters/Provider'
+    get:
+      tags: [Browse]
+      operationId: browseProviderRoot
+      summary: Browse a provider's root folder
+      description: Returns the HTML browser listing folders/files at the provider root.
+      responses:
+        '200':
+          description: HTML browser page.
+          content:
+            text/html:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerErrorHtml'
+
+  /{provider}/{key}:
+    parameters:
+      - $ref: '#/components/parameters/Provider'
+      - $ref: '#/components/parameters/ObjectKey'
+    get:
+      tags: [Files, Browse]
+      operationId: getObject
+      summary: Browse a folder, or download / stream / preview / share an object
+      description: |
+        The query flag selects the behavior (mutually exclusive):
+
+        | Query            | Behavior | Response |
+        |------------------|----------|----------|
+        | _(none)_         | Browse folder (key ending in `/`) | `text/html` |
+        | `?download`      | Force download (attachment) | binary, supports `Range` |
+        | `?stream`        | Inline stream (CDN-cached) | binary, supports `Range` |
+        | `?preview`       | Inline preview (video → player page) | binary or `text/html` |
+        | `?share`         | Generate a Direct S3 (presigned) link | `application/json` |
+        | `?share&cdn=true`| Generate a CDN (Worker) link | `application/json` |
+
+        Range requests (`Range: bytes=...`) return `206 Partial Content` and **bypass** the
+        Worker cache (only full `200` responses below 256 MB are cached).
+      parameters:
+        - $ref: '#/components/parameters/DownloadFlag'
+        - $ref: '#/components/parameters/StreamFlag'
+        - $ref: '#/components/parameters/PreviewFlag'
+        - $ref: '#/components/parameters/ShareFlag'
+        - $ref: '#/components/parameters/CdnFlag'
+        - $ref: '#/components/parameters/RangeHeader'
+      responses:
+        '200':
+          description: Full object body, share-link JSON, or an HTML page.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: '`attachment` for download, `inline` for stream/preview.'
+            Accept-Ranges:
+              schema: { type: string, example: bytes }
+            CF-Cache-Status:
+              schema: { type: string, enum: [HIT, MISS, BYPASS] }
+            X-Provider:
+              schema: { type: string }
+            X-Response-Time:
+              schema: { type: string, example: 42ms }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+            text/html:
+              schema: { type: string }
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareLinkResponse'
+              examples:
+                cdn:
+                  $ref: '#/components/examples/ShareCdn'
+                direct:
+                  $ref: '#/components/examples/ShareDirect'
+        '206':
+          description: Partial content (range request). Not cached by the Worker.
+          headers:
+            Content-Range:
+              schema: { type: string, example: bytes 0-1048575/5242880 }
+            Accept-Ranges:
+              schema: { type: string, example: bytes }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFoundHtml'
+        '500':
+          $ref: '#/components/responses/ServerErrorHtml'
+    delete:
+      tags: [Files]
+      operationId: deleteObject
+      summary: Delete a single object
+      description: Issues an S3 `DeleteObject`. Requires `s3:DeleteObject` permission on the key.
+      responses:
+        '200':
+          description: Deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResult'
+              examples:
+                ok:
+                  value: { success: true, message: File deleted successfully }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Delete failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResult'
+              examples:
+                fail:
+                  value: { success: false, error: 'Delete failed from Wasabi (S3 Status: 403): ...' }
+    options:
+      tags: [System]
+      operationId: optionsObject
+      summary: CORS preflight
+      security: []
+      responses:
+        '204':
+          $ref: '#/components/responses/CorsPreflight'
+
+  /mcp:
+    get:
+      tags: [MCP]
+      operationId: mcpDescriptor
+      summary: MCP server descriptor (discovery / health)
+      description: Returns basic server metadata. Does not require auth.
+      security: []
+      responses:
+        '200':
+          description: Server descriptor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpDescriptor'
+              examples:
+                descriptor:
+                  value:
+                    name: multicloud-s3-mcp
+                    version: 7.0.0
+                    transport: streamable-http
+                    endpoint: /mcp
+                    protocolVersion: '2024-11-05'
+    post:
+      tags: [MCP]
+      operationId: mcpRpc
+      summary: MCP JSON-RPC 2.0 endpoint
+      description: |
+        Stateless Streamable-HTTP MCP server. Accepts a single JSON-RPC request or a
+        batch (array). Supported methods: `initialize`, `ping`, `tools/list`,
+        `tools/call`, and the `notifications/initialized` notification.
+
+        Authenticate with `Authorization: Bearer <MCP_TOKEN>` or HTTP Basic.
+      security:
+        - mcpBearer: []
+        - basicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/JsonRpcRequest'
+                - type: array
+                  items:
+                    $ref: '#/components/schemas/JsonRpcRequest'
+            examples:
+              initialize:
+                value: { jsonrpc: '2.0', id: 1, method: initialize, params: {} }
+              toolsList:
+                value: { jsonrpc: '2.0', id: 2, method: tools/list }
+              toolsCall:
+                value:
+                  jsonrpc: '2.0'
+                  id: 3
+                  method: tools/call
+                  params:
+                    name: analyze_storage
+                    arguments: { provider: all }
+      responses:
+        '200':
+          description: JSON-RPC response (object or array for batches).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/JsonRpcResponse'
+                  - type: array
+                    items:
+                      $ref: '#/components/schemas/JsonRpcResponse'
+              examples:
+                toolsListResult:
+                  $ref: '#/components/examples/McpToolsList'
+                toolsCallResult:
+                  $ref: '#/components/examples/McpToolsCall'
+        '202':
+          description: Accepted notification (no response body).
+        '401':
+          description: Unauthorized (missing/invalid bearer token or Basic credentials).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcResponse'
+              examples:
+                unauth:
+                  value: { jsonrpc: '2.0', id: null, error: { code: -32001, message: Unauthorized } }
+        '405':
+          description: Method not allowed (only GET/POST/OPTIONS).
+    options:
+      tags: [System]
+      operationId: optionsMcp
+      summary: CORS preflight (allows POST for browser MCP clients)
+      security: []
+      responses:
+        '204':
+          $ref: '#/components/responses/CorsPreflight'
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: WebDAV-style username + password (`AUTH_USERNAME` / `AUTH_PASSWORD`).
+    mcpBearer:
+      type: http
+      scheme: bearer
+      description: Bearer token for the `/mcp` endpoint (`MCP_TOKEN` secret).
+
+  parameters:
+    Provider:
+      name: provider
+      in: path
+      required: true
+      description: Provider routing prefix.
+      schema:
+        type: string
+        enum: [impossible, wasabi, r2, oci]
+    ObjectKey:
+      name: key
+      in: path
+      required: true
+      description: |
+        Object key. May contain `/` (sub-paths). A trailing `/` denotes a folder for
+        browsing. Clients should URL-encode each path segment.
+      schema:
+        type: string
+      example: videos/movie.mp4
+    SearchQuery:
+      name: search
+      in: query
+      required: false
+      description: Search term (min 2 characters). Searches all configured providers.
+      schema:
+        type: string
+        minLength: 2
+      example: backup
+    BulkExportType:
+      name: bulkExport
+      in: query
+      required: false
+      description: Export format for bulk links.
+      schema:
+        type: string
+        enum: [all, cdn, direct, download, json, markdown]
+    BulkDeleteFlag:
+      name: bulkDelete
+      in: query
+      required: false
+      description: Presence triggers bulk delete (use with `files`).
+      allowEmptyValue: true
+      schema:
+        type: string
+    FilesList:
+      name: files
+      in: query
+      required: false
+      description: |
+        Comma-separated list of `provider:path` entries, where `path` includes the routing
+        prefix. Example: `wasabi:wasabi/videos/a.mp4,r2:r2/docs/b.pdf`.
+      schema:
+        type: string
+    DownloadFlag:
+      name: download
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Force a file download (Content-Disposition attachment).
+      schema:
+        type: string
+    StreamFlag:
+      name: stream
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Inline stream through the CDN (cached, range-aware).
+      schema:
+        type: string
+    PreviewFlag:
+      name: preview
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Inline preview (videos return an HTML player page).
+      schema:
+        type: string
+    ShareFlag:
+      name: share
+      in: query
+      required: false
+      allowEmptyValue: true
+      description: Generate a share link (JSON). Combine with `cdn=true` for a CDN link.
+      schema:
+        type: string
+    CdnFlag:
+      name: cdn
+      in: query
+      required: false
+      description: With `share`, return a CDN (Worker) link instead of a direct S3 link.
+      schema:
+        type: string
+        enum: ['true', 'false']
+    RangeHeader:
+      name: Range
+      in: header
+      required: false
+      description: Byte range (e.g. `bytes=0-1048575`). Triggers a `206` and bypasses the Worker cache.
+      schema:
+        type: string
+      example: bytes=0-1048575
+
+  responses:
+    Unauthorized:
+      description: Authentication required or failed.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Basic realm="Multi-Cloud S3 Index"
+      content:
+        text/html:
+          schema:
+            type: string
+    NotFoundHtml:
+      description: Object or path not found.
+      content:
+        text/html:
+          schema:
+            type: string
+    ServerErrorHtml:
+      description: Server error (friendly HTML page; technical details hidden unless debug mode is on).
+      content:
+        text/html:
+          schema:
+            type: string
+    CorsPreflight:
+      description: CORS preflight response.
+      headers:
+        Access-Control-Allow-Origin:
+          schema: { type: string, example: '*' }
+        Access-Control-Allow-Methods:
+          schema: { type: string, example: 'GET, HEAD, OPTIONS' }
+        Access-Control-Max-Age:
+          schema: { type: string, example: '86400' }
+
+  schemas:
+    ShareLinkResponse:
+      type: object
+      required: [success, url, type]
+      properties:
+        success: { type: boolean }
+        url: { type: string, format: uri }
+        type:
+          type: string
+          enum: [cdn, direct]
+        expires_in_seconds:
+          type: [integer, 'null']
+          description: Null for CDN/public links; 604800 (7 days) for presigned direct links.
+        note: { type: string }
+
+    DeleteResult:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        error: { type: string }
+
+    BulkExportLinkEntry:
+      type: object
+      properties:
+        success: { type: boolean }
+        fileName: { type: string }
+        path: { type: string }
+        provider: { type: string }
+        providerIcon: { type: string }
+        cdnUrl: { type: string, format: uri }
+        directUrl: { type: string, format: uri }
+        downloadUrl: { type: string, format: uri }
+        error: { type: string }
+
+    BulkDeleteResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        total: { type: integer }
+        deleted: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              success: { type: boolean }
+              fileName: { type: string }
+              path: { type: string }
+              provider: { type: string }
+              providerIcon: { type: string }
+              message: { type: string }
+              error: { type: string }
+
+    AiChatRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: The user's natural-language instruction.
+        context:
+          type: object
+          description: Optional UI context (e.g., currently visible files) passed to the agent.
+          additionalProperties: true
+        conversationHistory:
+          type: array
+          description: Prior messages ({role, content}) for multi-turn memory.
+          items:
+            type: object
+            properties:
+              role: { type: string, enum: [system, user, assistant, tool] }
+              content: { type: string }
+
+    AiChatResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success: { type: boolean }
+        message: { type: string, description: The agent's natural-language reply. }
+        model: { type: string }
+        agentic: { type: boolean }
+        iterations: { type: integer }
+        toolCalls:
+          type: array
+          items:
+            type: object
+            properties:
+              tool: { type: string }
+              success: { type: boolean }
+
+    AiChatError:
+      type: object
+      properties:
+        success: { type: boolean, enum: [false] }
+        error: { type: string }
+        fallback: { type: string }
+        errorDetails:
+          type: string
+          description: Present only when CONFIG.debug is enabled.
+
+    McpDescriptor:
+      type: object
+      properties:
+        name: { type: string }
+        version: { type: string }
+        transport: { type: string }
+        endpoint: { type: string }
+        protocolVersion: { type: string }
+
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc: { type: string, enum: ['2.0'] }
+        id:
+          oneOf: [{ type: string }, { type: integer }]
+          description: Omit for notifications.
+        method:
+          type: string
+          enum: [initialize, ping, tools/list, tools/call, notifications/initialized]
+        params:
+          type: object
+          additionalProperties: true
+
+    JsonRpcResponse:
+      type: object
+      required: [jsonrpc]
+      properties:
+        jsonrpc: { type: string, enum: ['2.0'] }
+        id:
+          oneOf: [{ type: string }, { type: integer }, { type: 'null' }]
+        result:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: '#/components/schemas/JsonRpcError'
+
+    JsonRpcError:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: |
+            -32700 parse error, -32600 invalid request, -32601 method not found,
+            -32602 invalid params (e.g., unknown tool), -32603 internal error,
+            -32001 unauthorized.
+        message: { type: string }
+
+    McpTool:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        inputSchema:
+          type: object
+          description: JSON Schema for the tool's arguments.
+
+    McpToolCallResult:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string, enum: [text] }
+              text: { type: string, description: JSON-encoded tool result. }
+        isError: { type: boolean }
+
+  examples:
+    ShareCdn:
+      summary: CDN (Worker) share link
+      value:
+        success: true
+        url: https://multicloud-s3-index.your-account.workers.dev/wasabi/videos/movie.mp4?stream
+        type: cdn
+        expires_in_seconds: null
+        note: "⚡ CDN-Accelerated - Fast for repeated viewing"
+    ShareDirect:
+      summary: Direct S3 presigned link
+      value:
+        success: true
+        url: https://bucket.s3.us-east-1.wasabisys.com/videos/movie.mp4?X-Amz-Algorithm=...
+        type: direct
+        expires_in_seconds: 604800
+        note: "🔗 Direct S3 - Best compatibility"
+    BulkExportText:
+      summary: Plain-text CDN export
+      value: |
+        ========================================
+          CDN LINKS (Worker-Accelerated)
+        ========================================
+        Generated: 5/30/2026, 12:00:00 PM
+        Total Files: 1
+        ========================================
+
+        1. movie.mp4
+           https://multicloud-s3-index.your-account.workers.dev/wasabi/videos/movie.mp4?stream
+    AiChatOk:
+      summary: Agent reply after using tools
+      value:
+        success: true
+        message: "I found 48 mp4 files. The three largest are movie.mkv (4.2 GB), trailer.mp4 (1.1 GB), and clip.mp4 (820 MB)."
+        model: minimax/minimax-m2:free
+        agentic: true
+        iterations: 2
+        toolCalls:
+          - { tool: search_files, success: true }
+          - { tool: analyze_storage, success: true }
+    McpToolsList:
+      summary: tools/list result
+      value:
+        jsonrpc: '2.0'
+        id: 2
+        result:
+          tools:
+            - name: search_files
+              description: Search for files across all cloud providers or specific provider.
+              inputSchema:
+                type: object
+                properties:
+                  query: { type: string, description: Search query (file name pattern) }
+                  provider: { type: string, description: 'Optional provider id' }
+                  fileType: { type: string, description: "Filter by extension, e.g. mp4" }
+                required: [query]
+    McpToolsCall:
+      summary: tools/call result
+      value:
+        jsonrpc: '2.0'
+        id: 3
+        result:
+          content:
+            - type: text
+              text: '{ "success": true, "analysis": { "totalFiles": 1247, "totalSize": 137992338739 } }'
+          isError: false

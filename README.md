@@ -4,6 +4,21 @@ A unified, **CDN-powered**, serverless web interface to browse, preview, share, 
 
 > 🚀 **NEW v7.0:** Hardened security (env-based credentials, XSS-safe rendering), correct S3 pagination, a **remote MCP server** at `/mcp`, native AI tool-calling via OpenRouter, and fully-implemented `move`/`organize`/`batch` agent tools. See [What's New in v7.0](#-whats-new-in-v70).
 
+## 📚 Documentation
+
+Full end-to-end docs live in [`docs/`](./docs):
+
+| Doc | Contents |
+|-----|----------|
+| [`docs/openapi.yaml`](./docs/openapi.yaml) | **OpenAPI 3.1** spec for every HTTP endpoint (browse, download, stream, preview, share, delete, search, bulk, aiChat, `/mcp`) |
+| [`docs/api-reference.md`](./docs/api-reference.md) | Narrative HTTP API reference (routing, query flags, headers, caching, curl examples) |
+| [`docs/mcp.md`](./docs/mcp.md) | Remote MCP server: transport, auth, JSON-RPC methods, client setup |
+| [`docs/agent-tools.md`](./docs/agent-tools.md) | The 11 agent tools — parameters, behavior, safety, return shapes |
+| [`docs/architecture.md`](./docs/architecture.md) | Request lifecycle, signing, listing/pagination, caching, agent loop |
+| [`docs/configuration.md`](./docs/configuration.md) | Every `CONFIG` option + all environment variables/secrets |
+| [`docs/deployment.md`](./docs/deployment.md) | Deploy via Wrangler or the dashboard; post-deploy checklist |
+| [`docs/migration.md`](./docs/migration.md) | Optional: split into `src/` modules and adopt the Cloudflare Agents SDK (`McpAgent`) |
+
 -----
 
 ## ✨ Features
