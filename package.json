@@ -1,0 +1,18 @@
+{
+  "name": "multicloud-s3-index",
+  "version": "7.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified, CDN-powered, serverless multi-cloud S3 browser for Cloudflare Workers with an autonomous AI agent and a remote MCP server.",
+  "main": "multiclouds3 v7.0.js",
+  "scripts": {
+    "check": "node --check \"multiclouds3 v7.0.js\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

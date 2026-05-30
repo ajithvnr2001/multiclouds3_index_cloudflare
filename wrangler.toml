@@ -1,0 +1,28 @@
+# Wrangler configuration for the Multi-Cloud S3 Index Worker (v7.0).
+# Deploy with:  npx wrangler deploy
+# Local dev:    npx wrangler dev
+#
+# This points at the single canonical module file. You can also still paste the
+# file directly into the Cloudflare dashboard if you prefer the no-build workflow.
+
+name = "multicloud-s3-index"
+main = "multiclouds3 v7.0.js"
+compatibility_date = "2025-05-01"
+
+# The Worker uses only Web-standard APIs (fetch, Web Crypto, Cache API), so no
+# extra compatibility flags or bindings are required.
+#
+# Set the following as SECRETS (never commit them):
+#   npx wrangler secret put AUTH_USERNAME       # web UI / WebDAV login username
+#   npx wrangler secret put AUTH_PASSWORD       # web UI / WebDAV login password
+#   npx wrangler secret put OPENROUTER_API_KEY  # AI agent (OpenRouter)
+#   npx wrangler secret put MCP_TOKEN           # optional bearer token for /mcp
+#
+# Provider credentials (only set the ones you use):
+#   IMPOSSIBLE_ACCESS_KEY_ID, IMPOSSIBLE_SECRET_ACCESS_KEY, IMPOSSIBLE_BUCKET_NAME, IMPOSSIBLE_REGION
+#   WASABI_ACCESS_KEY_ID, WASABI_SECRET_ACCESS_KEY, WASABI_BUCKET_NAME, WASABI_REGION
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ACCOUNT_ID
+#   OCI_ACCESS_KEY_ID, OCI_SECRET_ACCESS_KEY, OCI_BUCKET_NAME, OCI_NAMESPACE, OCI_REGION
+
+[observability]
+enabled = true

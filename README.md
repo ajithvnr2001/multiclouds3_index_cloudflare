@@ -2,7 +2,7 @@
 
 A unified, **CDN-powered**, serverless web interface to browse, preview, share, and delete files stored in **ImpossibleCloud**, **Wasabi**, **Cloudflare R2**, and **Oracle Cloud (OCI)** S3-compatible storage. Powered by Cloudflare Workers with advanced caching, optimization, and **autonomous AI agent** capabilities for intelligent file management.
 
-> 🚀 **NEW v6.8:** Autonomous AI Agent with 11 tools, WebDAV authentication, advanced duplicate detection, and intelligent link generation!
+> 🚀 **NEW v7.0:** Hardened security (env-based credentials, XSS-safe rendering), correct S3 pagination, a **remote MCP server** at `/mcp`, native AI tool-calling via OpenRouter, and fully-implemented `move`/`organize`/`batch` agent tools. See [What's New in v7.0](#-whats-new-in-v70).
 
 -----
 
@@ -168,15 +168,18 @@ Agent:
 
 ```javascript
 enableAIChat: true,
-aiModel: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+aiProvider: "openrouter",            // AI is powered by OpenRouter
+aiModel: "minimax/minimax-m2:free",  // any OpenRouter model id
 enableAgenticAI: true,
 agentConfig: {
   maxIterations: 8,
   enableAutoExecution: true,
-  requireConfirmation: false, // Set true for manual approval
+  requireConfirmation: false, // Set true to require confirm:true before destructive tools run
   tools: [/* 11 tools enabled */]
 }
 ```
+
+> The AI agent uses **OpenRouter** (set the `OPENROUTER_API_KEY` secret), not the Cloudflare AI binding. It uses **native function/tool calling** with a text-protocol fallback for models that don't support tools.
 
 ### **🔐 WebDAV Authentication** ⭐ **NEW in v6.8!**
 
@@ -190,13 +193,18 @@ Secure your storage with WebDAV-compatible username and password authentication.
   - 🌐 **WebDAV Client Compatible** - Works with rclone, Cyberduck, Windows Explorer
   - ⚠️ **Failed Login Feedback** - Clear error messages for invalid credentials
 
-**Configuration:**
+**Configuration (v7.0):**
 ```javascript
 passwordProtected: true,
 authMode: "username", // "username" (WebDAV) or "password" (legacy)
-username: "your-username",
-password: "your-password"
+// Credentials are read from Worker SECRETS, not the source file:
+//   AUTH_USERNAME, AUTH_PASSWORD
+// The in-code username/password fields are blank fallbacks for local testing only.
 ```
+> 🔐 **Security:** In v7.0 credentials are no longer hard-coded. Set them as secrets
+> (`wrangler secret put AUTH_USERNAME` / `AUTH_PASSWORD`). If neither the secret nor a
+> code fallback is set, authentication **fails closed** (access denied). Comparisons are
+> constant-time.
 
 **Compatible with:**
   - **rclone** - WebDAV backend with Basic Auth
@@ -269,13 +277,35 @@ For each provider you want to use, gather the following credentials:
 
 ### 2\. Deploy the Worker
 
+**Option A — Dashboard (no build):**
   - Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com) → Workers & Pages → Create Worker.
-  - Copy and paste the complete worker code (`multiclouds3 v6.8.js`).
+  - Copy and paste the complete worker code (`multiclouds3 v7.0.js`).
   - Save and deploy.
 
-### 3\. Configure Environment Variables
+**Option B — Wrangler (recommended):**
+```bash
+npm install
+npx wrangler deploy        # uses wrangler.toml (main = "multiclouds3 v7.0.js")
+```
 
-Go to the Worker's settings → Variables and add the following. You only need to add variables for the providers you are using.
+### 3\. Configure Environment Variables & Secrets
+
+Add the following. With Wrangler, set sensitive values as **secrets**
+(`npx wrangler secret put NAME`); in the dashboard, use **Encrypt**. You only need
+variables for the providers you use.
+
+#### Authentication, AI & MCP (set as secrets)
+
+| Variable Name | Required | Description |
+| --- | --- | --- |
+| `AUTH_USERNAME` | yes* | Web UI / WebDAV login username (replaces hard-coded CONFIG value) |
+| `AUTH_PASSWORD` | yes* | Web UI / WebDAV login password (auth fails closed if unset) |
+| `OPENROUTER_API_KEY` | for AI | OpenRouter API key that powers the AI agent |
+| `MCP_TOKEN` | optional | Bearer token for the `/mcp` endpoint (otherwise Basic auth is used) |
+
+\* Required when `passwordProtected: true` (the default).
+
+#### Provider credentials
 
 | Variable Name | Example Value | Description |
 | --- | --- | --- |
@@ -290,36 +320,38 @@ Go to the Worker's settings → Variables and add the following. You only need t
 | `R2_ACCESS_KEY_ID` | `a0b1c2d3e4f5...` | Cloudflare R2 Access Key |
 | `R2_SECRET_ACCESS_KEY` | `g6h7j8k9l0m1...` | Cloudflare R2 Secret Key |
 | `R2_BUCKET_NAME` | `my-r2-bucket` | Cloudflare R2 Bucket Name |
-| `R2_ACCOUNT_ID` | `f9e8d7c6b5a4...` | **Required.** Your Cloudflare Account ID |
+| `R2_ACCOUNT_ID` | `f9e8d7c6b5a4...` | **Required for R2.** Your Cloudflare Account ID |
 | `OCI_ACCESS_KEY_ID` | `OCI...` | Oracle Cloud Access Key |
 | `OCI_SECRET_ACCESS_KEY` | `zYxWvU...` | Oracle Cloud Secret Key |
 | `OCI_BUCKET_NAME` | `my-oci-bucket` | Oracle Cloud Bucket Name |
-| `OCI_NAMESPACE` | `axbycz...` | **Required.** Your OCI Tenancy Namespace |
+| `OCI_NAMESPACE` | `axbycz...` | **Required for OCI.** Your OCI Tenancy Namespace |
 | `OCI_REGION` | `ap-hyderabad-1` | Oracle Cloud Region |
 
-**Important:** Encrypt all **Secret Access Keys** for best security.
+**Important:** Always store **Secret Access Keys** and tokens as encrypted secrets.
 
-### 4\. Add AI Binding (for Agentic Features)
+### 4\. Configure the AI Agent (OpenRouter)
 
-In `wrangler.toml` or Worker settings:
+The AI agent is powered by [OpenRouter](https://openrouter.ai) (not the Cloudflare AI
+binding). Create an API key and set it as a secret:
 
-```toml
-[ai]
-binding = "AI"
+```bash
+npx wrangler secret put OPENROUTER_API_KEY
 ```
 
-This enables the autonomous AI agent features (free tier: 10,000 requests/day).
+Pick any model via `CONFIG.aiModel` (default `minimax/minimax-m2:free`). The agent uses
+native tool-calling when the model supports it and falls back to a text protocol otherwise.
 
 ### 5\. Configure Authentication
 
-In the worker code, set your login credentials:
+Set credentials as secrets (do **not** put them in the source):
 
-```javascript
-passwordProtected: true,
-authMode: "username",
-username: "your-username",
-password: "your-secure-password"
+```bash
+npx wrangler secret put AUTH_USERNAME
+npx wrangler secret put AUTH_PASSWORD
 ```
+
+In `CONFIG`, keep `passwordProtected: true` and choose `authMode: "username"` (WebDAV) or
+`"password"` (legacy). Leave `username`/`password` blank in code.
 
 ### 6\. Access Your Interface
 
@@ -408,6 +440,62 @@ See detailed logs in browser console:
 [Agent] Found 127 total files
 [Agent] Found 8 duplicate groups
 ```
+
+-----
+
+## 🔌 Remote MCP Server (v7.0)
+
+The same 11 agent tools are exposed as a **remote [Model Context Protocol](https://modelcontextprotocol.io) server** so any MCP client (Claude Desktop, Cursor, the Cloudflare AI Playground, etc.) can list and call them.
+
+  - **Endpoint:** `POST https://your-worker.workers.dev/mcp`
+  - **Transport:** stateless Streamable HTTP, JSON-RPC 2.0 (no extra infrastructure, no dependencies)
+  - **Methods:** `initialize`, `ping`, `tools/list`, `tools/call`
+  - **Toggle:** `CONFIG.enableMCP` (default `true`)
+
+### Authentication
+
+Two options (the bearer token is checked first, then Basic auth):
+
+  - **Bearer token (recommended for clients):** set the `MCP_TOKEN` secret and send `Authorization: Bearer <token>`.
+  - **Basic auth:** reuse your `AUTH_USERNAME` / `AUTH_PASSWORD` (works with header pass-through).
+
+### Quick test
+
+```bash
+# List tools
+curl -s https://your-worker.workers.dev/mcp \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# Call a tool
+curl -s https://your-worker.workers.dev/mcp \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"analyze_storage","arguments":{"provider":"all"}}}'
+```
+
+### Connect from a local MCP client
+
+For clients that only speak local stdio, bridge to the remote server with
+[`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "multicloud-s3": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://your-worker.workers.dev/mcp",
+        "--header", "Authorization: Bearer YOUR_MCP_TOKEN"
+      ]
+    }
+  }
+}
+```
+
+> Tools that generate links use the live request origin, so URLs returned over MCP are valid for your deployment.
 
 -----
 
@@ -518,20 +606,26 @@ const CONFIG = {
   siteIcon: "🌤️",
   theme: "dark", // "dark", "light", "blue", "purple", "sunset", "forest"
   
-  // Authentication
+  // Authentication (credentials come from secrets AUTH_USERNAME / AUTH_PASSWORD)
   passwordProtected: true,
   authMode: "username", // "username" (WebDAV) or "password" (legacy)
-  username: "your-username",
-  password: "your-password",
+  username: "",         // leave blank; set AUTH_USERNAME secret instead
+  password: "",         // leave blank; set AUTH_PASSWORD secret instead
+
+  // Security / networking (v7.0)
+  corsAllowOrigin: "*", // tighten to your origin(s) for stricter CORS
+  debug: false,         // true exposes technical error details (never in prod)
+  enableMCP: true,      // expose the agent tools as a remote MCP server at /mcp
   
-  // AI Agent
+  // AI Agent (OpenRouter — set OPENROUTER_API_KEY secret)
   enableAIChat: true,
-  aiModel: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  aiProvider: "openrouter",
+  aiModel: "minimax/minimax-m2:free",
   enableAgenticAI: true,
   agentConfig: {
     maxIterations: 8,
-    enableAutoExecution: true, // Allow agent to execute operations
-    requireConfirmation: false, // Set true for manual approval
+    enableAutoExecution: true,  // Allow agent to execute operations
+    requireConfirmation: false, // true => destructive tools require confirm:true
     tools: [/* 11 tools */]
   },
   
@@ -555,6 +649,37 @@ const CONFIG = {
   defaultSort: { field: "name", direction: "asc" }
 };
 ```
+
+-----
+
+## 🆕 What's New in v7.0
+
+A correctness, security, and integration release.
+
+### 🔒 Security
+  - **Credentials moved out of source** → read from `AUTH_USERNAME` / `AUTH_PASSWORD` secrets; auth **fails closed** if unset.
+  - **Constant-time** credential comparison; correct handling of passwords containing `:`.
+  - **XSS-safe rendering** — all file/folder names, paths, and search queries are HTML/JS-escaped in the browse and search pages (previously a stored-XSS risk via crafted filenames).
+  - **No info leakage** — stack traces and raw upstream error text are gated behind `CONFIG.debug`.
+  - **Tighter CORS** — cross-origin `DELETE` is no longer pre-authorized; `/mcp` preflight allows `POST`.
+  - **Confirmation gate** — `requireConfirmation` is now actually enforced for destructive agent tools.
+
+### 🐞 Correctness
+  - **S3 pagination** — listings now follow `NextContinuationToken` (previously truncated at 1000 objects everywhere).
+  - **Correct key decoding** — `encoding-type=url` + entity/URL decoding fixes names containing `&`, spaces, etc.
+  - **Range-cache fix** — partial (206) responses are no longer cached under the full-object key.
+  - **`generate_links` fixed** — uses the real request origin instead of a hard-coded placeholder.
+  - Agent file ops now strip routing prefixes so deletes/moves target the correct key.
+
+### 🤖 AI & 🔌 MCP
+  - **OpenRouter** with **native function/tool calling** (text-protocol fallback retained).
+  - **ETag-based duplicate detection** (content hash) with name+size fallback.
+  - **Retry/backoff + timeouts** on upstream calls; large tool outputs trimmed before re-feeding the model.
+  - **Remote MCP server** at `/mcp` (see above).
+  - **Implemented** `move_files` (same-provider server-side copy; cross-provider stream), `organize_files` (preview + execute), and `batch_operations` (delete/move/links/list by criteria).
+
+### 🛠️ Project
+  - Added `wrangler.toml`, `package.json`, and `.gitignore` for a proper build/deploy workflow (the single-file dashboard paste still works).
 
 -----
 
@@ -648,14 +773,19 @@ All 4 types in one command!
 ## 🔧 Troubleshooting
 
 ### **AI Agent**
-  - **Agent not responding:** Check AI binding is configured (`[ai]` in wrangler.toml)
-  - **Tools not executing:** Verify `enableAgenticAI: true` in CONFIG
+  - **Agent not responding:** Ensure the `OPENROUTER_API_KEY` secret is set and the model id in `CONFIG.aiModel` is valid
+  - **Tools not executing:** Verify `enableAgenticAI: true` in CONFIG; some free models don't support native tool-calling (the text-protocol fallback then applies)
   - **Hitting iteration limit:** Increase `maxIterations` or break into smaller tasks
-  - **Delete not working:** Check `enableAutoExecution: true` in CONFIG
-  - **No duplicates found:** Agent scans up to 5 levels - files may be deeper
+  - **Delete not working:** Check `enableAutoExecution: true` (and pass `confirm:true` when `requireConfirmation` is enabled)
+  - **No duplicates found:** Agent scans up to 5 levels and caps at 20,000 files - files may be deeper
+
+### **MCP Server**
+  - **401 from `/mcp`:** Send `Authorization: Bearer <MCP_TOKEN>` or valid Basic credentials
+  - **Disabled:** Ensure `enableMCP: true` in CONFIG
+  - **Local client can't connect:** Bridge with `npx mcp-remote <url>/mcp` and pass the auth header
 
 ### **WebDAV Authentication**
-  - **Login fails:** Check username and password in CONFIG match exactly
+  - **Login fails:** Check the `AUTH_USERNAME` / `AUTH_PASSWORD` secrets match exactly
   - **Session expires:** Credentials stored in sessionStorage (cleared on browser close)
   - **rclone can't connect:** Ensure `authMode: "username"` is set
   - **Still prompts for password:** Clear browser cache and session storage
@@ -789,4 +919,4 @@ If you find this useful, please consider starring the repository! It helps other
 
 *Enjoy your blazing-fast, CDN-powered, AI-enhanced, multi-cloud file browser!* 🚀
 
-**Version 6.8** - Now with Autonomous AI Agent and WebDAV Authentication
+**Version 7.0** - Hardened security, correct S3 pagination, OpenRouter AI with native tool-calling, and a remote MCP server
